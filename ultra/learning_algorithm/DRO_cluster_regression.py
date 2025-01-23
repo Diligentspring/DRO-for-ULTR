@@ -51,7 +51,7 @@ def cross_entropy_loss(pre, tar):
 def group_cross_entropy_loss(pre, tar, weight):
     return (-(torch.log(pre) * tar + torch.log(1 - pre) * (1 - tar))*weight).mean(dim=-1).mean()
 
-class DRO_cluster_regression(BaseAlgorithm):
+class DRO_cluster_regression_exam(BaseAlgorithm):
     """The Inverse Propensity Weighting algorithm for unbiased learning to rank.
 
     This class implements the training and testing of the Inverse Propensity Weighting algorithm for unbiased learning to rank. See the following paper for more information on the algorithm.
@@ -68,12 +68,13 @@ class DRO_cluster_regression(BaseAlgorithm):
             data_set: (Raw_data) The dataset used to build the input layer.
             exp_settings: (dictionary) The dictionary containing the model settings.
         """
-        print('Build DRO_cluster_regression.')
+        print('Build DRO_cluster_regression_exam.')
 
         self.hparams = ultra.utils.hparams.HParams(
             propensity_estimator_type='ultra.utils.propensity_estimator.RandomizedPropensityEstimator',
             # the setting file for the predefined click models.
             propensity_estimator_json='./example/PropensityEstimator/randomized_pbm_0.1_1.0_4_1.0.json',
+            EM_step_size=0.05,  # Step size for EM algorithm.
             # learning_rate=0.05,                 # Learning rate.
             learning_rate=exp_settings['ln'],
             max_gradient_norm=5.0,            # Clip gradients to this norm.
@@ -84,7 +85,7 @@ class DRO_cluster_regression(BaseAlgorithm):
             lambda_para=0.1,
             c_para = 1000
         )
-
+        self.name = 'Regression-EM'
         self.is_cuda_avail = torch.cuda.is_available()
         self.writer = SummaryWriter()
         self.cuda = torch.device('cuda')
@@ -106,20 +107,20 @@ class DRO_cluster_regression(BaseAlgorithm):
         #                            torch.tensor(0.117303605), torch.tensor(0.117215851), torch.tensor(0.113510696),
         #                            torch.tensor(0.1108772), torch.tensor(0.103224903), torch.tensor(0.094898941)]
 
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution.txt', 'rb') as f:
-        with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c50.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_cls_c50.txt', 'rb') as f:
+
+        with open('train_distribution.txt', 'rb') as f:
             self.train_distribution = pickle.load(f)
-        print(self.train_distribution)
+        # print(self.train_distribution)
 
         self.group_weight_model = [torch.tensor(d) for d in self.train_distribution]
 
         # print(self.group_weight_model[0].is_leaf)
         # self.exams = torch.tensor([1, 1, 0.6738, 0.4145, 0.2932, 0.2079, 0.1714, 0.1363, 0.1166, 0.0838, 0.0579])
-        self.exams = torch.tensor([1, 1, 0.6738, 0.4145, 0.2932, 0.2079, 0.1714, 0.1363, 0.1166, 0.0838, 0.0579])
+        with torch.no_grad():
+            self.propensity = torch.cat([torch.tensor([[0.000001]]), torch.ones([1, self.rank_list_size])], dim=1) * 0.9
         if self.is_cuda_avail:
             self.model = self.model.to(device=self.cuda)
-            self.exams = self.exams.to(device=self.cuda)
+            self.propensity = self.propensity.to(device=self.cuda)
             for i in range(len(self.group_weight_model)):
                 self.group_weight_model[i] = self.group_weight_model[i].to(device=self.cuda)
                 self.group_weight_model[i].requires_grad = True
@@ -174,9 +175,7 @@ class DRO_cluster_regression(BaseAlgorithm):
 
         train_output = self.ranking_model(self.model,
             self.rank_list_size)
-        # train_output = torch.sigmoid(train_output)
         # train_output = train_output + self.sigmoid_prob_b
-        # train_output = torch.nan_to_num(train_output_raw)  # the output of the ranking model may contain nan
 
         # Conduct estimation step.
         gamma = torch.sigmoid(train_output)
@@ -187,7 +186,7 @@ class DRO_cluster_regression(BaseAlgorithm):
                      range(len(input_feed["positions"]))]
         propensities = []
         for i in range(len(positions)):
-            propensities.append(torch.gather(self.exams, 0, positions[i]))
+            propensities.append(torch.gather(torch.squeeze(self.propensity, dim=0), 0, positions[i]))
         propensity = torch.stack(propensities, dim=0)
         # print(self.propensity)
         # self.propensity_weights = torch.ones_like(self.propensity) / self.propensity
@@ -196,9 +195,10 @@ class DRO_cluster_regression(BaseAlgorithm):
                      (1 - gamma) / (1 - propensity * gamma)
         p_e0_r1_c0 = (1 - propensity) * gamma / \
                      (1 - propensity * gamma)
-        # p_e0_r0_c0 = (1 - self.propensity) * (1 - gamma) / \
-        #              (1 - self.propensity * gamma)
-        # p_e1 = p_e1_r0_c0 + p_e1_r1_c1
+        p_e0_r0_c0 = (1 - propensity) * (1 - gamma) / \
+                     (1 - propensity * gamma)
+        p_e1 = reshaped_train_labels + \
+               (1 - reshaped_train_labels) * p_e1_r0_c0
         p_r1 = reshaped_train_labels + \
                (1 - reshaped_train_labels) * p_e0_r1_c0
 
@@ -230,8 +230,12 @@ class DRO_cluster_regression(BaseAlgorithm):
 
         # print(self.group_weight)
         self.loss = group_cross_entropy_loss(gamma, self.ranker_labels.detach(), self.group_weight.detach())
+
         lambda_para = self.lambda_para
-        self.group_weight_loss = -group_cross_entropy_loss(gamma.detach(), self.ranker_labels.detach(), self.group_weight) \
+        # self.group_weight_loss = -group_cross_entropy_loss(gamma.detach(), self.ranker_labels.detach(), self.group_weight) \
+        #                          + lambda_para * torch.norm(torch.stack(self.group_weight_model, dim=-1) - p0, p=2)
+        self.group_weight_loss = -group_cross_entropy_loss(gamma.detach() * propensity.detach(), reshaped_train_labels.detach(),
+                                                           self.group_weight) \
                                  + lambda_para * torch.norm(torch.stack(self.group_weight_model, dim=-1) - p0, p=2)
 
         params = self.model.parameters()
@@ -246,12 +250,25 @@ class DRO_cluster_regression(BaseAlgorithm):
             nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.max_gradient_norm)
         opt.step()
 
+        with torch.no_grad():
+            new_propensity = reshaped_train_labels + (1 - reshaped_train_labels) * p_e1_r0_c0
+            new_propensity = new_propensity * self.group_weight
+
+            positions = torch.stack(positions, dim=0)
+            for i in range(self.rank_list_size):
+                num_tensor = torch.where(positions == i + 1, self.group_weight, 0)
+                new_propensity_tensor = torch.where(positions == i + 1, new_propensity, 0)
+                if torch.all(num_tensor == 0):
+                    continue
+                else:
+                    self.propensity[0][i + 1] = (1 - self.hparams.EM_step_size) * self.propensity[0][i + 1] \
+                                                + self.hparams.EM_step_size * torch.sum(new_propensity_tensor) / torch.sum(num_tensor)
+        print(self.propensity)
+        self.group_weight_loss.backward()
         # print(self.group_weight_model[0].is_leaf)
 
         # opt_group = self.optimizer_func(self.group_weight_model, self.learning_rate)
         # opt_group.zero_grad(set_to_none=True)
-
-        self.group_weight_loss.backward()
 
         if self.global_step < 1000:
             # self.group_weight_lr = 1 / (1000 * self.lambda_para * (self.global_step+1))
@@ -339,7 +356,7 @@ class DRO_cluster_regression(BaseAlgorithm):
             propensities = []
             for i in range(len(positions)):
                 # print(positions[i])
-                propensities.append(torch.gather(self.exams, 0, positions[i]))
+                propensities.append(torch.gather(torch.squeeze(self.propensity, dim=0), 0, positions[i]))
             propensity = torch.stack(propensities, dim=0)
 
 

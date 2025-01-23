@@ -9,3 +9,5 @@ codecov
 numpy
 pandas
 pickle
+faiss
+seaborn

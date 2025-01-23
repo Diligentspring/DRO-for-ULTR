@@ -29,55 +29,25 @@ import random
 import faiss
 import pickle
 
-from ultra.learning_algorithm.dla import DLA
 from ultra.learning_algorithm.dla_pbm import DLA_PBM
 from ultra.learning_algorithm.prs_rank_modify import PRSrank_modify
 from ultra.learning_algorithm.ips_pbm import IPS_PBM
-from ultra.learning_algorithm.ips_pbm_arp import IPS_PBM_arp
-from ultra.learning_algorithm.ips_pbm_softmax import IPS_PBM_softmax
-from ultra.learning_algorithm.ips_pbm_arp_wo9 import IPS_PBM_arp_wo9
-
-from ultra.learning_algorithm.ips_dcm import IPS_DCM
-from ultra.learning_algorithm.ips_ubm import IPS_UBM
 from ultra.learning_algorithm.navie_algorithm import NavieAlgorithm
 from ultra.learning_algorithm.navie_algorithm_pair import NavieAlgorithm_pair
 from ultra.learning_algorithm.navie_algorithm_softmax import NavieAlgorithm_softmax
-from ultra.learning_algorithm.naive_arp_wo9 import NaiveAlgorithm_arp_wo9
-from ultra.learning_algorithm.naive_algorithm_softmax_crossentropy import NavieAlgorithm_softmax_crossentropy
-
-from ultra.learning_algorithm.regression_EM import RegressionEM
 from ultra.learning_algorithm.pbm_click_model import PBM_Click_Model
-from ultra.learning_algorithm.PBM_additive import PBM_additive
-from ultra.learning_algorithm.pbm_click_model_softmax import PBM_Click_Model_Softmax
-from ultra.learning_algorithm.learning_production_ranker import Learning_Production_Ranker
-from ultra.learning_algorithm.learning_bm25 import Learning_bm25
-from ultra.learning_algorithm.learning_bm25_click import Learning_bm25_click
-from ultra.learning_algorithm.learning_bm25_scores import Learning_bm25_scores
 
-from ultra.learning_algorithm.DRO_naive_arp_bm25_click_p0_wo9_eta import DRO_Naive_arp_bm25_click_p0_wo9_eta
-from ultra.learning_algorithm.DRO_naive_arp_pos_click_p0_wo9_eta import DRO_Naive_arp_pos_click_p0_wo9_eta
+from ultra.learning_algorithm.DRO_cluster_IPS import DRO_cluster_IPS_softmax
+from ultra.learning_algorithm.DRO_cluster_DLA import DRO_cluster_DLA_softmax
 
-from ultra.learning_algorithm.cluster_ips import Cluster_IPS_softmax
-from ultra.learning_algorithm.cluster_ips_complete import Cluster_IPS_complete_softmax
 from ultra.learning_algorithm.DRO_cluster_PBM_click_model import DRO_cluster_pbm_click_model
 from ultra.learning_algorithm.DRO_cluster_regression import DRO_cluster_regression
 
-from ultra.learning_algorithm.regression_EM_point_true_allpair import RegressionEM_point_true_allpair
-from ultra.learning_algorithm.regression_EM_point_true import RegressionEM_point_true
-from ultra.learning_algorithm.pbm_click_model_allpair import PBM_Click_Model_allpair
-
 # rank list size should be read from data
 parser = argparse.ArgumentParser(description='Pipeline commandline argument')
-parser.add_argument("--data_dir", type=str, default="./tests/data/", help="The directory of the experimental dataset.")
-parser.add_argument("--train_data_prefix", type=str, default="train", help="The name prefix of the training data "
-                                                                           "in data_dir.")
-parser.add_argument("--valid_data_prefix", type=str, default="valid", help="The name prefix of the validation data in "
-                                                                           "data_dir.")
-parser.add_argument("--training_valid_data_prefix", type=str, default="training_valid",
-                    help="The name prefix of the training-validation data in "
-                         "data_dir.")
-parser.add_argument("--test_data_prefix", type=str, default="test",
-                    help="The name prefix of the test data in data_dir.")
+parser.add_argument("--dataset_dir", type=str, default="./tests/data/", help="The directory of the baidu-ultr-uva dataset.")
+parser.add_argument("--ULTR_model", type=str, default="DRO-IPS",
+                    help="The ULTR model to train.")
 parser.add_argument("--model_dir", type=str, default="./tests/tmp_model/", help="The directory for model and "
                                                                                 "intermediate outputs.")
 parser.add_argument("--output_dir", type=str, default="./tests/tmp_output/", help="The directory to output results.")
@@ -127,7 +97,7 @@ def get_traditional_vectors(info):
     traditional_vectors = [list(row) for row in zip(*keys_list)]
     return traditional_vectors
 
-def get_clusters(vectors, index):
+def get_clusters(info, index):
     # keys = ['bm25', 'bm25_title', 'bm25_abstract', 'tf_idf', 'tf', 'idf', 'ql_jelinek_mercer_short',
     #         'ql_jelinek_mercer_long', 'ql_dirichlet', 'document_length', 'title_length', 'abstract_length']
     # vectors = []
@@ -136,9 +106,25 @@ def get_clusters(vectors, index):
     #     for k in keys:
     #         vector.append(info[k][i])
     #     vectors.append(vector)
+    vectors = get_traditional_vectors(info)
     # print(vector)
     D, I = index.search(np.array(vectors), 1)
     return [int(x) for x in I]
+
+def get_qpp_cluster(info, index):
+    keys = ['bm25', 'bm25_title', 'bm25_abstract', 'tf_idf', 'tf', 'idf', 'ql_jelinek_mercer_short',
+            'ql_jelinek_mercer_long', 'ql_dirichlet', 'document_length', 'title_length', 'abstract_length']
+    positions = info['position']
+    vectors = []
+    for j in range(len(positions)):
+        if positions[j] <= 10:
+            vector = []
+            for k in keys:
+                vector.append(info[k][j])
+            vectors.append(np.array(vector))
+    qpp_vector = np.concatenate((np.mean(vectors, axis=0), np.std(vectors, axis=0)))
+    D, I = index.search(np.array([qpp_vector]), 1)
+    return int(I[0])
 
 def get_batch_click(model, data_set, batch_size, list_size, index):
     batch_size = int(batch_size)
@@ -148,30 +134,38 @@ def get_batch_click(model, data_set, batch_size, list_size, index):
     rank_list_idxs = []
     query_lengths = []
     bm25s = []
-    # clusters = []
+    clusters = []
 
     for _ in range(batch_size):
         i = int(random.random() * length)
         rank_list_idxs.append(i)
-        # batch_clusters = get_clusters(data_set[i]['query_document_embedding'], index)
+        # batch_clusters = get_clusters(data_set[i], index)
+        batch_cluster = get_qpp_cluster(data_set[i], index)
+        clusters.append(batch_cluster)
         query_lengths.append(data_set[i]['query_length'])
+
+        traditional_vectors = get_traditional_vectors(data_set[i])
+
         if len(data_set[i]['click']) >= list_size:
             labels.append(data_set[i]['click'][:list_size])
             positions.append(data_set[i]['position'][:list_size])
             bm25s.append(data_set[i]['bm25'][:list_size])
             # clusters.append(batch_clusters[:list_size])
             docid_inputs.append([i + len(letor_features) for i in range(len(labels[-1]))])
-            letor_features.extend(data_set[i]['query_document_embedding'][:list_size])
+            # letor_features.extend(data_set[i]['query_document_embedding'][:list_size])
+            letor_features.extend(traditional_vectors[:list_size])
         else:
             labels.append(data_set[i]['click'])
             positions.append(data_set[i]['position'])
             bm25s.append(data_set[i]['bm25'])
             # clusters.append(batch_clusters)
             docid_inputs.append([i + len(letor_features) for i in range(len(labels[-1]))])
-            letor_features.extend(data_set[i]['query_document_embedding'])
+            # letor_features.extend(data_set[i]['query_document_embedding'])
+            letor_features.extend(traditional_vectors)
 
             for _ in range(list_size - len(labels[-1])):
-                letor_features.append([0.0 for _ in range(768)])
+                # letor_features.append([0.0 for _ in range(768)])
+                letor_features.append([0.0 for _ in range(12)])
                 labels[-1].append(0)
                 positions[-1].append(0)
                 bm25s[-1].append(-1)
@@ -185,9 +179,11 @@ def get_batch_click(model, data_set, batch_size, list_size, index):
         for j in range(list_size):
             if docid_inputs[i][j] < 0:
                 docid_inputs[i][j] = letor_features_length
+                labels[i][j] = 0
             if positions[i][j] > list_size:
                 positions[i][j] = 0
                 docid_inputs[i][j] = letor_features_length
+                labels[i][j] = 0
             if bm25s[i][j] <= 14.46619701:
                 labels[i][j] = 0
 
@@ -217,15 +213,15 @@ def get_batch_click(model, data_set, batch_size, list_size, index):
     input_feed["positions"] = positions
     input_feed["query_lengths"] = query_lengths
     input_feed["bm25s"] = bm25s
-    # input_feed["clusters"] = clusters
+    input_feed["clusters"] = clusters
     # Create info_map to store other information
     info_map = {
         'rank_list_idxs': rank_list_idxs,
         'input_list': docid_inputs,
         'click_list': labels,
         'letor_features': letor_features,
-        'positions': positions
-        # 'clusters': clusters
+        'positions': positions,
+        'clusters': clusters
     }
     return input_feed, info_map
 
@@ -238,13 +234,17 @@ def get_batch_annotation(index, model, data_set, batch_size, list_size):
     for offset in range(min(batch_size, num_remain_data)):
         i = index + offset
 
+        traditional_vectors = get_traditional_vectors(data_set[i])
+
         labels.append(data_set[i]['label'])
         docid_inputs.append([i + len(letor_features) for i in range(len(labels[-1]))])
-        letor_features.extend(data_set[i]['query_document_embedding'])
+        # letor_features.extend(data_set[i]['query_document_embedding'])
+        letor_features.extend(traditional_vectors)
 
         if len(labels[-1]) < list_size:
             for _ in range(list_size - len(labels[-1])):
-                letor_features.append([0.0 for _ in range(768)])
+                # letor_features.append([0.0 for _ in range(768)])
+                letor_features.append([0.0 for _ in range(12)])
                 labels[-1].append(0)
                 docid_inputs[-1].append(-1)
 
@@ -292,27 +292,27 @@ def get_batch_valid_click(index, model, data_set, batch_size, list_size):
     for offset in range(min(batch_size, num_remain_data)):
         i = index + offset
 
-        # traditional_vectors = get_traditional_vectors(data_set[i])
+        traditional_vectors = get_traditional_vectors(data_set[i])
 
         if len(data_set[i]['click']) >= list_size:
             labels.append(data_set[i]['click'][: list_size])
             docid_inputs.append([i + len(letor_features) for i in range(len(labels[-1]))])
-            letor_features.extend(data_set[i]['query_document_embedding'][: list_size])
-            # letor_features.extend(traditional_vectors[: list_size])
+            # letor_features.extend(data_set[i]['query_document_embedding'][: list_size])
+            letor_features.extend(traditional_vectors[: list_size])
             positions.append(data_set[i]['position'][: list_size])
             bm25s.append(data_set[i]['bm25'][: list_size])
         else:
             labels.append(data_set[i]['click'])
             docid_inputs.append([i + len(letor_features) for i in range(len(labels[-1]))])
-            letor_features.extend(data_set[i]['query_document_embedding'])
-            # letor_features.extend(traditional_vectors)
+            # letor_features.extend(data_set[i]['query_document_embedding'])
+            letor_features.extend(traditional_vectors)
             positions.append(data_set[i]['position'])
             bm25s.append(data_set[i]['bm25'])
 
             if len(labels[-1]) < list_size:
                 for _ in range(list_size - len(labels[-1])):
-                    letor_features.append([0.0 for _ in range(768)])
-                    # letor_features.append([0.0 for _ in range(12)])
+                    # letor_features.append([0.0 for _ in range(768)])
+                    letor_features.append([0.0 for _ in range(12)])
                     labels[-1].append(0)
                     docid_inputs[-1].append(-1)
                     positions[-1].append(0)
@@ -402,57 +402,26 @@ def train(exp_settings):
     setup_seed(args.seed)
 
     # Prepare data.
-    # print("Reading data in %s" % args.data_dir)
 
-    train_dataset = load_dataset(path="/home/niuzechun/baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
+    train_dataset = load_dataset(path=args.model_dir + "baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
                                  name="clicks",
                                  split="train",  # ["train", "test"]
-                                 cache_dir="/home/niuzechun/baidu-ultr_uva-mlm-ctr/parts",
+                                 cache_dir=args.model_dir + "baidu-ultr_uva-mlm-ctr/parts",
                                  )
     # train_dataset.set_format("torch")
 
-    annotation_dataset = load_dataset(path="/home/niuzechun/baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
+    annotation_dataset = load_dataset(path=args.model_dir + "baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
                                       name="annotations",
                                       split="test",  # ["train", "test"]
-                                      cache_dir="/home/niuzechun/baidu-ultr_uva-mlm-ctr/parts",
+                                      cache_dir=args.model_dir + "baidu-ultr_uva-mlm-ctr/parts",
                                       )
-    # indices = range(1397)
-    # valid_dataset = torch.utils.data.Subset(annotation_dataset, indices)
-
-    valid_dataset_whole = load_dataset(path="/home/niuzechun/baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
-                                 name="clicks",
-                                 split="test",  # ["train", "test"]
-                                 cache_dir="/home/niuzechun/baidu-ultr_uva-mlm-ctr/parts",
-                                 )
-    # indices = range(296965)
-    indices = range(10000)
-    valid_dataset = torch.utils.data.Subset(valid_dataset_whole, indices)
-
-    # indices = range(296965, 593930)
-    indices = range(10000, 20000)
-    test_dataset_click = torch.utils.data.Subset(valid_dataset_whole, indices)
-
-    # valid_dataset.set_format("torch")
-
-    # train_set = ultra.utils.read_data(args.data_dir, args.train_data_prefix, args.click_model_dir, args.max_list_cutoff)
-    # ultra.utils.find_class(exp_settings['train_input_feed']).preprocess_data(train_set,
-    #                                                                          exp_settings['train_input_hparams'],
-    #                                                                          exp_settings)
-    # valid_set = ultra.utils.read_data(args.data_dir, args.valid_data_prefix, args.click_model_dir, args.max_list_cutoff)
-    # ultra.utils.find_class(exp_settings['train_input_feed']).preprocess_data(valid_set,
-    #                                                                          exp_settings['train_input_hparams'],
-    #                                                                          exp_settings)
 
     # print("Train Rank list size %d" % train_set.rank_list_size)
     # print("Valid Rank list size %d" % valid_set.rank_list_size)
     exp_settings['max_candidate_num'] = 113
-    feature_size = 768
+    feature_size = 12
 
-    test_set = None
     if args.test_while_train:
-        # indices = range(1397, 6985)
-        # test_dataset = torch.utils.data.Subset(annotation_dataset, indices)
-
         test_dataset = annotation_dataset
 
     if 'selection_bias_cutoff' not in exp_settings:  # check if there is a limit on the number of items per training query.
@@ -470,7 +439,6 @@ def train(exp_settings):
     # Create model based on the input layer.
 
     exp_settings['ln'] = args.ln
-    exp_settings['train_data_prefix'] = args.train_data_prefix
     exp_settings['model_dir'] = args.model_dir
     exp_settings['batch_size'] = args.batch_size
     exp_settings['lambda_para'] = args.lambda_para
@@ -478,56 +446,11 @@ def train(exp_settings):
 
     print("Creating model...")
 
-    # model = DLA_PBM(feature_size, exp_settings)
-    # model = PRSrank_modify(feature_size, exp_settings)
-
-    # model = IPS_PBM(feature_size, exp_settings)
-    # model = IPS_PBM_arp(feature_size, exp_settings)
-    # model = IPS_PBM_softmax(feature_size, exp_settings)
-    # model = IPS_PBM_arp_wo9(feature_size, exp_settings)
-
-    # model = IPS_DCM(train_set, exp_settings)
-    # model = IPS_UBM(train_set, exp_settings)
-    # model = NavieAlgorithm(feature_size, exp_settings)
-    # model = NavieAlgorithm_pair(feature_size, exp_settings)
-    # model = NavieAlgorithm_softmax(feature_size, exp_settings)
-    # model = NaiveAlgorithm_arp_wo9(feature_size, exp_settings)
-
-    # model = RegressionEM(feature_size, exp_settings)
-    # model = PBM_Click_Model(feature_size, exp_settings)
-    # model = PBM_additive(feature_size, exp_settings)
-    # model = PBM_Click_Model_Softmax(feature_size, exp_settings)
-    # model = Learning_Production_Ranker(feature_size, exp_settings)
-    # model = Learning_bm25(feature_size, exp_settings)
-    # model = Learning_bm25_click(feature_size, exp_settings)
-    # model = Learning_bm25_scores(feature_size, exp_settings)
-
-    # model = DRO_Naive_arp_bm25_click_p0_wo9_eta(feature_size, exp_settings)
-    # model = DRO_Naive_arp_bm25_pos_click_p0_wo9_eta_g3(feature_size, exp_settings)
-
-    # model = Cluster_IPS_softmax(feature_size, exp_settings)
-    # model = Cluster_IPS_complete_softmax(feature_size, exp_settings)
-    # model = DRO_cluster_IPS_arp(feature_size, exp_settings)
-
-    # model = DRO_cluster_regression(feature_size, exp_settings)
-    # model = RegressionEM_point_true_allpair(feature_size, exp_settings)
-    # model = DRO_cluster_pbm_click_model(feature_size, exp_settings)
-    # model = PBM_Click_Model_allpair(feature_size, exp_settings)
-    model = PBM_Click_Model(feature_size, exp_settings)
-    # model = RegressionEM_point_true(feature_size, exp_settings)
-    # model.print_info()
-
-    # Create data feed
-    # train_input_feed = ultra.utils.find_class(exp_settings['train_input_feed'])(model, args.batch_size,
-    #                                                                             exp_settings['train_input_hparams'])
-    # valid_input_feed = ultra.utils.find_class(exp_settings['valid_input_feed'])(model, args.batch_size,
-    #                                                                             exp_settings['valid_input_hparams'])
-    #
-    # test_input_feed = None
-    # if args.test_while_train:
-    #     test_input_feed = ultra.utils.find_class(exp_settings['test_input_feed'])(model, args.batch_size,
-    #                                                                               exp_settings[
-    #                                                                                   'test_input_hparams'])
+    ULTR_model = args.ULTR_model
+    if ULTR_model == 'DRO-IPS':
+        model = DRO_cluster_IPS_softmax(feature_size, exp_settings)
+    elif ULTR_model == 'DRO-DLA':
+        model = DRO_cluster_DLA_softmax(feature_size, exp_settings)
 
     # Create tensorboard summarizations.
     train_writer = torch.utils.tensorboard.SummaryWriter(log_dir=args.model_dir + '/train_log')
@@ -548,23 +471,17 @@ def train(exp_settings):
     best_perf_test = None
     best_step_test = None
 
-    best_perf_test_click = None
-    best_step_test_click = None
 
     best_loss = None
     loss_best_step = None
     print("max_train_iter: ", args.max_train_iteration)
 
-    # with open('/home/niuzechun/ULTRA_DRO/Kmeans/centroids.txt', 'rb') as f:
-    #     centroids = pickle.load(f)
-    # with open('/home/niuzechun/ULTRA_DRO/Kmeans/centroids_c50.txt', 'rb') as f:
-    #     centroids = pickle.load(f)
-    with open('/home/niuzechun/ULTRA_DRO/Kmeans/centroids_cls_c50.txt', 'rb') as f:
+    with open('centroids_qpp.txt', 'rb') as f:
         centroids = pickle.load(f)
 
     # print(centroids)
 
-    index = faiss.IndexFlatL2(768)
+    index = faiss.IndexFlatL2(24)
     index.add(centroids)
 
     while True:
@@ -641,7 +558,9 @@ def train(exp_settings):
 
                     # print(exp_settings['max_candidate_num'])
 
-                    _, _, summary = model.validation(input_feed, is_validation=is_validation)
+                    # _, _, summary = model.validation(input_feed, is_validation=is_validation)
+                    _, _, summary = model.validation(input_feed)
+
                     # summary_list.append(summary)
                     # deep copy the summary dict
                     summary_list.append(copy.deepcopy(summary))
@@ -651,95 +570,11 @@ def train(exp_settings):
                 return ultra.utils.merge_Summary(summary_list, batch_size_list)
                 # return summary_list
 
-            def validate_model_withclick(data_set, is_validation =False): #with click
-                it = 0
-                count_batch = 0.0
-                summary_list = []
-                batch_size_list = []
-                while it < len(data_set):
-                    # input_feed, info_map = data_input_feed.get_next_batch(
-                    #     it, data_set, check_validation=False, data_format=args.data_format)
-
-                    input_feed, info_map = get_batch_valid_click(it, model, data_set, exp_settings['batch_size'],
-                                                                exp_settings['selection_bias_cutoff'])
-
-                    # print(exp_settings['selection_bias_cutoff'])
-
-                    # _, _, summary = model.validation(input_feed)
-                    _, _, summary = model.validation_withclick(input_feed, is_validation=is_validation)
-
-                    # summary_list.append(summary)
-                    # deep copy the summary dict
-                    summary_list.append(copy.deepcopy(summary))
-                    batch_size_list.append(len(info_map['input_list']))
-                    it += batch_size_list[-1]
-                    count_batch += 1.0
-                return ultra.utils.merge_Summary(summary_list, batch_size_list)
-
-            # valid_summary = validate_model(valid_dataset)
-            valid_summary = validate_model_withclick(valid_dataset, is_validation=True)
-            # print(valid_summary)
-            valid_writer.add_scalars('Validation_Summary', valid_summary, model.global_step)
-            for key, value in valid_summary.items():
-                # print(key, value)
-                print("%s %.4f" % (key, value))
-
-            # Save checkpoint if the objective metric on the validation set is better
-            if "objective_metric" in exp_settings:
-                for key, value in valid_summary.items():
-                    if key == exp_settings["objective_metric"]:
-                        if current_step >= args.start_saving_iteration:
-                            if best_perf == None or best_perf > value:
-                                checkpoint_path = os.path.join(args.model_dir,
-                                                               "%s.ckpt" % str(
-                                                                   exp_settings['learning_algorithm']) + str(
-                                                                   model.global_step))
-                                torch.save(model.model.state_dict(), checkpoint_path)
-
-                                # save propensity_model, if exists
-                                if hasattr(model, 'propensity_model'):
-                                    checkpoint_path_propensity = os.path.join(args.model_dir,
-                                                                              "%s.ckpt_propensity" % str(
-                                                                                  exp_settings[
-                                                                                      'learning_algorithm']) + str(
-                                                                                  model.global_step))
-                                    torch.save(model.propensity_model.state_dict(), checkpoint_path_propensity)
-                                else:
-                                    pass
-
-                                best_perf = value
-                                best_step = model.global_step
-                                print('Save model, valid %s:%.4f,step %d' % (key, best_perf, best_step))
-                                break
-                            print('best valid %s:%.4f,step %d' % (key, best_perf, best_step))
 
             if args.test_while_train:
-                test_summary = validate_model_withclick(test_dataset_click, is_validation=False)
-                test_writer.add_scalars('Test Summary click while training', test_summary, model.global_step)
-                test_output_file.write(str(model.global_step))
-
-                for key, value in test_summary.items():
-                    # print(key, value)
-                    if key == 'cross_entropy_loss':
-                        test_output_file.write(' ' + str(key) + ': ' + str(value))
-                        print('test click value: ' + str(key) + ': ' + str(value))
-                        if best_perf_test_click == None or best_perf_test_click > value:
-                            checkpoint_path = os.path.join(args.model_dir,
-                                                           "%s.ckpt" % str(
-                                                               exp_settings['learning_algorithm']) + str(
-                                                               model.global_step))
-                            torch.save(model.model.state_dict(), checkpoint_path)
-                            best_perf_test_click = value
-                            best_step_test_click = model.global_step
-                            print('Save model, test_click %s:%.4f,step %d' % (
-                            key, best_perf_test_click, best_step_test_click))
-                        else:
-                            print('best test_click %s:%.4f,step %d' % (key, best_perf_test_click, best_step_test_click))
-                test_output_file.write('\n')
-
                 test_summary = validate_model(test_dataset, is_validation=False)
                 test_writer.add_scalars('Test Summary while training', test_summary, model.global_step)
-                # test_output_file.write(str(model.global_step))
+                test_output_file.write(str(model.global_step))
 
                 for key, value in test_summary.items():
                     if key != 'cross_entropy_loss':
@@ -793,6 +628,71 @@ def train(exp_settings):
     if args.test_while_train:
         test_writer.close()
         test_output_file.close()
+
+def test(exp_settings):
+    # Load test data.
+    print("Reading data in %s" % args.data_dir)
+
+    annotation_dataset = load_dataset(path=args.model_dir + "baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
+                                      name="annotations",
+                                      split="test",  # ["train", "test"]
+                                      cache_dir=args.model_dir + "baidu-ultr_uva-mlm-ctr/parts",
+                                      )
+    test_dataset = annotation_dataset
+    exp_settings['max_candidate_num'] = 113
+    feature_size = 12
+
+    if 'selection_bias_cutoff' not in exp_settings:  # check if there is a limit on the number of items per training query.
+        exp_settings['selection_bias_cutoff'] = args.selection_bias_cutoff if args.selection_bias_cutoff > 0 else \
+            exp_settings['max_candidate_num']
+    exp_settings['selection_bias_cutoff'] = min(exp_settings['selection_bias_cutoff'],
+                                                exp_settings['max_candidate_num'])
+    print('Users can only see the top %d documents for each query in training.' % exp_settings['selection_bias_cutoff'])
+
+    exp_settings['ln'] = args.ln
+    exp_settings['batch_size'] = args.batch_size
+    # Create model and load parameters.
+
+    model = NavieAlgorithm_softmax(feature_size, exp_settings)
+
+    checkpoint_path = args.model_dir
+    ckpt = torch.load(checkpoint_path)
+    print("Reading model parameters from %s" % checkpoint_path)
+    model.model.load_state_dict(ckpt)
+    model.model.eval()
+
+    # Create input feed
+    # test_input_feed = ultra.utils.find_class(exp_settings['test_input_feed'])(model, args.batch_size,
+    #                                                                           exp_settings['test_input_hparams'])
+
+    # test_writer = SummaryWriter(log_dir=args.model_dir + '/test_log')
+
+    rerank_scores = []
+    summary_list = []
+    # Start testing.
+
+    it = 0
+    count_batch = 0.0
+    batch_size_list = []
+    while it < len(test_dataset):
+        input_feed, info_map = get_batch_annotation(it, model, test_dataset, exp_settings['batch_size'], exp_settings['selection_bias_cutoff'])
+        # print(input_feed)
+        _, output_logits, summary = model.validation(input_feed)
+        # summary_list.append(summary)
+        # deep copy the summary dict
+        summary_list.append(copy.deepcopy(summary))
+        batch_size_list.append(len(info_map['input_list']))
+        for x in range(batch_size_list[-1]):
+            rerank_scores.append(output_logits[x])
+        it += batch_size_list[-1]
+        count_batch += 1.0
+        # print("Testing {:.0%} finished".format(float(it) / len(test_set.initial_list)), end="\r", flush=True)
+
+    print("\n[Done]")
+    test_summary = ultra.utils.merge_Summary(summary_list, batch_size_list)
+    print("  eval: %s" % (
+        ' '.join(['%s:%.4f' % (key, value) for key, value in test_summary.items()])
+    ))
 
 def main(_):
     exp_settings = json.load(open(args.setting_file))

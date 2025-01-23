@@ -144,13 +144,7 @@ class DRO_cluster_DLA_softmax(BaseAlgorithm):
         #                            torch.tensor(0.117303605), torch.tensor(0.117215851), torch.tensor(0.113510696),
         #                            torch.tensor(0.1108772), torch.tensor(0.103224903), torch.tensor(0.094898941)]
 
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c50.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_qpp_c50.txt', 'rb') as f:
-        #     self.train_distribution = pickle.load(f)
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_cls_qpp_c50.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_qpp_c30.txt', 'rb') as f:
-        with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_qpp_c40.txt', 'rb') as f:
+        with open('train_distribution_qpp.txt', 'rb') as f:
             self.train_distribution = pickle.load(f)
         self.group_weight_model = [torch.tensor(d) for d in self.train_distribution]
 

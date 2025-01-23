@@ -10,15 +10,18 @@ import pandas as pd
 
 import pickle
 
+import sys
+
+dataset_path = sys.argv[1]
+n_cluster = int(sys.argv[2])
+
 train_vectors = []
-dataset = load_dataset(path="/home/niuzechun/baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
+dataset = load_dataset(path=dataset_path+"baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
     name="clicks",
     split="train", # ["train", "test"]
-    cache_dir="/home/niuzechun/baidu-ultr_uva-mlm-ctr/parts",
+    cache_dir=dataset_path+"baidu-ultr_uva-mlm-ctr/parts",
 )
 for i in range(len(dataset)):
-    # if i > 0:
-    #     break
     keys = ['bm25', 'bm25_title', 'bm25_abstract', 'tf_idf', 'tf', 'idf', 'ql_jelinek_mercer_short',
             'ql_jelinek_mercer_long', 'ql_dirichlet', 'document_length', 'title_length', 'abstract_length']
     info = dataset[i]
@@ -30,18 +33,14 @@ for i in range(len(dataset)):
             for k in keys:
                 vector.append(info[k][j])
             train_vectors.append(vector)
-    # train_vectors.append(dataset[i]['query_document_embedding'])
 
-test_vectors = []
-test_dataset = load_dataset(path="/home/niuzechun/baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
+test_query_vectors = []
+test_dataset = load_dataset(path=dataset_path+"baidu-ultr_uva-mlm-ctr/baidu-ultr_uva-mlm-ctr.py",
     name="annotations",
     split="test", # ["train", "test"]
-    cache_dir="/home/niuzechun/baidu-ultr_uva-mlm-ctr/parts",
+    cache_dir=dataset_path+"baidu-ultr_uva-mlm-ctr/parts",
 )
 for i in range(len(test_dataset)):
-    # test_vectors.append(test_dataset[i]['query_document_embedding'])
-    # if i > 0:
-    #     break
     info = test_dataset[i]
     keys = ['bm25', 'bm25_title', 'bm25_abstract', 'tf_idf', 'tf', 'idf', 'ql_jelinek_mercer_short',
             'ql_jelinek_mercer_long', 'ql_dirichlet', 'document_length', 'title_length', 'abstract_length']
@@ -52,26 +51,10 @@ for i in range(len(test_dataset)):
             vector.append(info[k][j])
         test_vectors.append(vector)
 
-# print(train_vectors)
-# print(test_vectors)
-all_vectors = train_vectors + test_vectors
-# print(all_vectors)
-all_vectors = np.asarray(all_vectors)
-# print(all_vectors)
-
 n_dims = len(train_vectors[0])
-
-# n_cluster = 150
-# n_cluster = 50
-# n_cluster = 20
-# n_cluster = 10
-n_cluster = 60
 
 # 创建Kmeans索引
 kmeans = faiss.Kmeans(n_dims, n_cluster, nredo=5, niter=500, verbose=True)
-
-# 训练Kmeans模型
-# kmeans.train(all_vectors)
 
 kmeans.train(np.asarray(train_vectors))
 
@@ -82,12 +65,8 @@ index.add(kmeans.centroids)
 print('centroids:')
 print(kmeans.centroids)
 
-with open('centroids_c60.txt', 'wb') as f:
+with open('centroids.txt', 'wb') as f:
     pickle.dump(kmeans.centroids, f)
-
-# with open('centroids.txt', 'rb') as f:
-#     centroids = pickle.load(f)
-# index.add(centroids)
 
 # D, I: matrix: kmeans_ncentroids * kmeans_topk
 train_distribution = np.array([0 for _ in range(n_cluster)])
@@ -96,7 +75,7 @@ print(len(I))
 for i in I:
     train_distribution[int(i)] += 1
 train_distribution = train_distribution / sum(train_distribution)
-with open('train_distribution_c60.txt', 'wb') as f:
+with open('train_distribution.txt', 'wb') as f:
     pickle.dump(list(train_distribution), f)
 
 test_distribution = np.array([0 for _ in range(n_cluster)])
@@ -105,7 +84,7 @@ print(len(I))
 for i in I:
     test_distribution[int(i)] += 1
 test_distribution = test_distribution / sum(test_distribution)
-with open('test_distribution_c60.txt', 'wb') as f:
+with open('test_distribution.txt', 'wb') as f:
     pickle.dump(list(test_distribution), f)
 
 cluster_list = [_ for _ in range(n_cluster)] + [_ for _ in range(n_cluster)]
@@ -115,5 +94,5 @@ data = pd.DataFrame({'cluster': cluster_list, 'distribution': np.concatenate((tr
 # print(data)
 sns.barplot(data, x='cluster', y='distribution', hue='dataset')
 
-plt.savefig("tra_cluster_barplot_c60.pdf", format="pdf")
+plt.savefig("tra_cluster_barplot.pdf", format="pdf")
 

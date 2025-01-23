@@ -14,34 +14,34 @@ In our paper, we utilized a public datasets: [Baidu-ultr-uva](https://huggingfac
 For reproducibility, one can download the dataset and place it at [DATA_PATH].
 
 ### K-Means Clustering
-To obtain training ranked lists with user IDs:
+To obtain K-Means cluster centors for training query-document pairs:
 ```
-python allocate_user.py [TRAINING_LABEL_PATH] [USER_NUM] [SESSION_NUM] [INITIAL_RANKED_LIST_PATH]
-```
-
-To generate click data on the obtained training ranked lists:
-```
-python generate_labels_PBM.py [RANKEDLIST_PATH] [TRAINING_LABEL_PATH] [USER_NUM]
+python count_baidu_tra_cluster.py [DATA_PATH] [CLUSTER_NUM]
 ```
 
-### Training and evaluating ULTR models
-This project implements our user-aware estimator and reproduces the offline ULTR models based on [ULTRA_pytorch](https://github.com/ULTR-Community/ULTRA_pytorch). Please see [ULTRA_pytorch](https://github.com/ULTR-Community/ULTRA_pytorch) for more details about this framework. Here we give the simple instructions to reproduce our experiments.
-
-To estimate relevance labels from clicks using our user-aware estimator:
+To obtain K-Means cluster centors for training sessions:
 ```
-python relevance_estimator.py [TRAINING_LABEL_PATH] [USER_NUM]
+python count_baidu_tra_qpp_cluster.py [DATA_PATH] [CLUSTER_NUM]
 ```
 
-To train an MLP ranking model with the relevance labels estimated by our user-aware estimator:
+### Training and evaluating DRO-ULTR models
+To train the DRO-PBM method using clicks:
 ```
-python main.py --data_dir [DATASET_PATH] --train_dataset train --train_data_prefix user_aware --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
+python main_tra_cluster.py --ULTR_model DRO-PBM --dataset_dir [DATA_PATH] --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
 ```
-
-To directly train a ULTR model like DLA using clicks:
+To train the DRO-Regression-EM method using clicks:
 ```
-python main_click.py --ULTR_model DLA --data_dir [DATASET_PATH] --train_dataset train_click --train_data_prefix train --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
+python main_tra_cluster.py --ULTR_model DRO-Regression-EM --dataset_dir [DATA_PATH] --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
 ```
-To evaluate a ULTR method (with an MLP ranking model):
+To train the DRO-IPS method using clicks:
 ```
-python main.py --data_dir [DATASET_PATH]  --setting_file ./example_settings/test_exp_settings.json --batch_size 1 --test_only True  --model_dir [MODEL_PATH]
+python main_tra_qpp_cluster.py --ULTR_model DRO-IPS --dataset_dir [DATA_PATH] --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
+```
+To train the DRO-DLA method using clicks:
+```
+python main_tra_qpp_cluster.py --ULTR_model DRO-DLA --dataset_dir [DATA_PATH] --model_dir [SAVE_MODEL_PATH] --setting_file ./example_settings/naive_exp_settings.json
+```
+To evaluate a ULTR method:
+```
+python main_tra_cluster.py --dataset_dir [DATA_PATH]  --setting_file ./example_settings/test_exp_settings.json --batch_size 1 --test_only True  --model_dir [MODEL_PATH]
 ```

@@ -45,13 +45,21 @@ def projector(group_weight_vec):
     # print(w)
     return w  # (1, group_size)
 
+class PropensityModel(nn.Module):
+    def __init__(self, list_size):
+        super(PropensityModel, self).__init__()
+        self._propensity_model = nn.Parameter(torch.cat([torch.tensor([[-1]]), torch.ones(1, list_size)], dim=1) * 5)
+
+    def forward(self):
+        return torch.sigmoid(self._propensity_model)  # (1, T+1)
+
 def cross_entropy_loss(pre, tar):
     return -(torch.log(pre) * tar + torch.log(1 - pre) * (1 - tar)).mean(dim=-1).mean()
 
 def group_cross_entropy_loss(pre, tar, weight):
     return (-(torch.log(pre) * tar + torch.log(1 - pre) * (1 - tar))*weight).mean(dim=-1).mean()
 
-class DRO_cluster_pbm_click_model(BaseAlgorithm):
+class DRO_cluster_pbm_click_model_exam(BaseAlgorithm):
     """The Inverse Propensity Weighting algorithm for unbiased learning to rank.
 
     This class implements the training and testing of the Inverse Propensity Weighting algorithm for unbiased learning to rank. See the following paper for more information on the algorithm.
@@ -68,7 +76,7 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
             data_set: (Raw_data) The dataset used to build the input layer.
             exp_settings: (dictionary) The dictionary containing the model settings.
         """
-        print('Build DRO_cluster_pbm_click_model.')
+        print('Build DRO_cluster_pbm_click_model_exam.')
 
         self.hparams = ultra.utils.hparams.HParams(
             propensity_estimator_type='ultra.utils.propensity_estimator.RandomizedPropensityEstimator',
@@ -76,6 +84,8 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
             propensity_estimator_json='./example/PropensityEstimator/randomized_pbm_0.1_1.0_4_1.0.json',
             # learning_rate=0.05,                 # Learning rate.
             learning_rate=exp_settings['ln'],
+            exam_learning_rate=0.01,
+            # exam_learning_rate=0.001,
             max_gradient_norm=5.0,            # Clip gradients to this norm.
             loss_func='softmax_loss',      # Select Loss function
             # Set strength for L2 regularization.
@@ -102,26 +112,19 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
         self.feature_size = feature_size
         self.model = self.create_model(self.feature_size)
 
-        # self.group_weight_model = [torch.tensor(0.111641277), torch.tensor(0.114577923), torch.tensor(0.116749604),
-        #                            torch.tensor(0.117303605), torch.tensor(0.117215851), torch.tensor(0.113510696),
-        #                            torch.tensor(0.1108772), torch.tensor(0.103224903), torch.tensor(0.094898941)]
-
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution.txt', 'rb') as f:
-        with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c50.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c40.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c30.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c20.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_c10.txt', 'rb') as f:
-        # with open('/home/niuzechun/ULTRA_DRO/Kmeans/train_distribution_cls_c50.txt', 'rb') as f:
+        with open('train_distribution.txt', 'rb') as f:
             self.train_distribution = pickle.load(f)
         self.group_weight_model = [torch.tensor(d) for d in self.train_distribution]
-
         # print(self.group_weight_model[0].is_leaf)
-        self.exams = torch.tensor([1, 1, 0.6738, 0.4145, 0.2932, 0.2079, 0.1714, 0.1363, 0.1166, 0.0838, 0.0579])
+
+        # self.exams = torch.tensor([1, 1, 0.6738, 0.4145, 0.2932, 0.2079, 0.1714, 0.1363, 0.1166, 0.0838, 0.0579])
+
+        self.propensity_model = PropensityModel(self.rank_list_size)
 
         if self.is_cuda_avail:
             self.model = self.model.to(device=self.cuda)
-            self.exams = self.exams.to(device=self.cuda)
+            # self.exams = self.exams.to(device=self.cuda)
+            self.propensity_model = self.propensity_model.to(device=self.cuda)
             for i in range(len(self.group_weight_model)):
                 self.group_weight_model[i] = self.group_weight_model[i].to(device=self.cuda)
                 self.group_weight_model[i].requires_grad = True
@@ -133,6 +136,7 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
 
         self.max_candidate_num = exp_settings['max_candidate_num']
         self.learning_rate = float(self.hparams.learning_rate)
+        self.exam_learning_rate = float(self.hparams.exam_learning_rate)
         self.global_step = 0
 
         # Feeds for inputs.
@@ -170,6 +174,7 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
         # compute propensity weights for the input data.
 
         self.model.train()
+        self.propensity_model.train()
         # self.group_weight_model.train()
         self.create_input_feed(input_feed, self.rank_list_size)
 
@@ -183,11 +188,20 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
         # print(train_output)
         # train_output = torch.nan_to_num(train_output)  # the output of the ranking model may contain nan
 
+        # positions = [torch.tensor(input_feed["positions"][i]).to(device=self.cuda) for i in
+        #              range(len(input_feed["positions"]))]
+        # propensities = []
+        # for i in range(len(positions)):
+        #     propensities.append(torch.gather(self.exams, 0, positions[i]))
+        # self.propensity = torch.stack(propensities, dim=0)
+
+        propensity_values = torch.squeeze(self.propensity_model(), dim=0)
+
         positions = [torch.tensor(input_feed["positions"][i]).to(device=self.cuda) for i in
                      range(len(input_feed["positions"]))]
         propensities = []
         for i in range(len(positions)):
-            propensities.append(torch.gather(self.exams, 0, positions[i]))
+            propensities.append(torch.gather(propensity_values, 0, positions[i]))
         self.propensity = torch.stack(propensities, dim=0)
         # print(self.propensity)
         # self.propensity_weights = torch.ones_like(self.propensity) / self.propensity
@@ -215,25 +229,52 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
             group_weights.append(torch.gather(group_weight_values, 0, clusters[i]))
         self.group_weight = torch.stack(group_weights, dim=0).to(device=self.cuda)
 
+        # num_group = []
+        # ave_loss_by_group = []
+        # with torch.no_grad():
+        #     loss_by_group = -(torch.log(train_output * self.propensity) * self.labels + \
+        #                       torch.log(1 - train_output * self.propensity) * (1 - self.labels))
+        #
+        #     clusters_matrix = torch.stack(clusters, dim=0)
+        #     for i in range(50):
+        #         num_tensor = torch.where(clusters_matrix == i + 1, 1, 0)
+        #         new_propensity_tensor = torch.where(clusters_matrix == i + 1, loss_by_group, 0)
+        #         num_group.append(torch.sum(num_tensor).cpu().detach().item())
+        #         if torch.all(num_tensor == 0):
+        #             ave_loss_by_group.append(0)
+        #         else:
+        #             ave_loss_by_group.append((torch.sum(new_propensity_tensor) / torch.sum(num_tensor)).cpu().detach().item())
+        # print(num_group)
+        # print(ave_loss_by_group)
+
+
         # print(self.group_weight)
         self.loss = group_cross_entropy_loss(train_output * self.propensity, self.labels, self.group_weight.detach())
         lambda_para = self.lambda_para
-        self.group_weight_loss = -group_cross_entropy_loss(train_output.detach() * self.propensity,
+        self.group_weight_loss = -group_cross_entropy_loss(train_output.detach() * self.propensity.detach(),
                                                            self.labels, self.group_weight) \
                                  + lambda_para * torch.norm(torch.stack(self.group_weight_model, dim=-1) - p0, p=2)
 
         params = self.model.parameters()
+        propensity_model_params = self.propensity_model.parameters()
         if self.hparams.l2_loss > 0:
             for p in params:
+                self.loss += self.hparams.l2_loss * self.l2_loss(p)
+            for p in propensity_model_params:
                 self.loss += self.hparams.l2_loss * self.l2_loss(p)
 
         opt = self.optimizer_func(self.model.parameters(), self.learning_rate)
         opt.zero_grad(set_to_none=True)
+
+        opt_propensity = self.optimizer_func(self.propensity_model.parameters(), self.exam_learning_rate)
+        opt_propensity.zero_grad(set_to_none=True)
+
         self.loss.backward()
         if self.hparams.max_gradient_norm > 0:
             nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.max_gradient_norm)
+            nn.utils.clip_grad_norm_(self.propensity_model.parameters(), self.hparams.max_gradient_norm)
         opt.step()
-
+        opt_propensity.step()
         # print(self.group_weight_model[0].is_leaf)
 
         # opt_group = self.optimizer_func(self.group_weight_model, self.learning_rate)
@@ -354,11 +395,10 @@ class DRO_cluster_pbm_click_model(BaseAlgorithm):
             positions = [torch.tensor(input_feed["positions"][i]).to(device=self.cuda) for i in
                          range(len(input_feed["positions"]))]
             propensities = []
+            propensity_values = torch.squeeze(self.propensity_model(), dim=0)
             for i in range(len(positions)):
-                propensities.append(torch.gather(self.exams, 0, positions[i]))
+                propensities.append(torch.gather(propensity_values, 0, positions[i]))
             propensity = torch.stack(propensities, dim=0)
-
-
             click_predict = gamma * propensity
         if not is_online_simulation:
             # pad_removed_output = self.remove_padding_for_metric_eval(
