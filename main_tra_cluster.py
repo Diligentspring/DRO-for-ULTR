@@ -1,10 +1,3 @@
-"""Training and testing unbiased learning to rank algorithms.
-
-See the following paper for more information about different algorithms.
-
-    * Qingyao Ai, Keping Bi, Cheng Luo, Jiafeng Guo, W. Bruce Croft. 2018. Unbiased Learning to Rank with Unbiased Propensity Estimation. In Proceedings of SIGIR '18
-
-"""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -83,7 +76,7 @@ parser.add_argument("--ln", type=float, default=0.01,
                     help="Learning rate.")
 parser.add_argument("--seed", type=int, default=1,
                     help="random seed.")
-parser.add_argument("--lambda_para", type=float, default=0.1,
+parser.add_argument("--lambda_para", type=float, default=0.01,
                     help="lambda_para_for_DRO")
 parser.add_argument("--c_para", type=float, default=1000,
                     help="c_para_for_DRO")
@@ -432,8 +425,10 @@ def train(exp_settings):
 
     ULTR_model = args.ULTR_model
     if ULTR_model == 'DRO-PBM':
+        exp_settings['ln'] = 0.00001
         model = DRO_cluster_pbm_click_model(feature_size, exp_settings)
     elif ULTR_model == 'DRO-Regression-EM':
+        exp_settings['ln'] = 0.0001
         model = DRO_cluster_regression(feature_size, exp_settings)
 
     # model.print_info()

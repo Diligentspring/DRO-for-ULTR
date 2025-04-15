@@ -82,7 +82,7 @@ class DRO_cluster_regression_exam(BaseAlgorithm):
             # Set strength for L2 regularization.
             l2_loss=0.0,
             grad_strategy='ada',            # Select gradient strategy
-            lambda_para=0.1,
+            lambda_para=0.01,
             c_para = 1000
         )
         self.name = 'Regression-EM'
