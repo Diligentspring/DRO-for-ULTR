@@ -117,7 +117,7 @@ class DRO_cluster_DLA_softmax(BaseAlgorithm):
             constant_propensity_initialization=False,
             # Set true to initialize propensity with constants.
             grad_strategy='ada',  # Select gradient strategy
-            lambda_para=0.1,
+            lambda_para=0.01,
             c_para=1000
         )
 
